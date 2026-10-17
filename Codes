@@ -1,0 +1,171 @@
+#include <Wire.h>
+#include <LiquidCrystal_I2C.h>
+#include <Servo.h>
+
+// Pin assignments
+const int irPin = 2;
+const int ledPin = 4;
+const int buzzerPin = 5;
+const int servoPin = 9;
+const int trigPin = 10;
+const int echoPin = 11;
+
+// LCD and servo
+LiquidCrystal_I2C lcd(0x27, 16, 2);
+Servo gateServo;
+
+// Adjust these angles to suit your physical gate
+const int closedAngle = 30;
+const int openAngle = 100;
+
+// Distance settings in centimetres
+const float objectNearCm = 15.0;
+const float pathClearCm = 25.0;
+
+// Servo movement speed
+const int servoStepDelay = 20;
+
+// Maximum time to keep the gate open
+const unsigned long maxOpenTime = 10000;
+
+int currentAngle = closedAngle;
+
+float readDistance() {
+digitalWrite(trigPin, LOW);
+delayMicroseconds(2);
+
+digitalWrite(trigPin, HIGH);
+delayMicroseconds(10);
+digitalWrite(trigPin, LOW);
+
+unsigned long duration = pulseIn(echoPin, HIGH, 30000);
+
+if (duration == 0) return -1;
+
+return duration * 0.0343 / 2.0;
+}
+
+void showStatus(const char* line1, const char* line2) {
+lcd.clear();
+lcd.setCursor(0, 0);
+lcd.print(line1);
+lcd.setCursor(0, 1);
+lcd.print(line2);
+}
+
+void moveGateSmoothly(int targetAngle) {
+if (targetAngle > currentAngle) {
+for (int angle = currentAngle; angle <= targetAngle; angle++) {
+gateServo.write(angle);
+delay(servoStepDelay);
+}
+} else {
+for (int angle = currentAngle; angle >= targetAngle; angle--) {
+gateServo.write(angle);
+delay(servoStepDelay);
+}
+}
+
+currentAngle = targetAngle;
+}
+
+void setup() {
+pinMode(irPin, INPUT);
+pinMode(ledPin, OUTPUT);
+pinMode(buzzerPin, OUTPUT);
+pinMode(trigPin, OUTPUT);
+pinMode(echoPin, INPUT);
+
+digitalWrite(ledPin, LOW);
+noTone(buzzerPin);
+
+gateServo.attach(servoPin);
+gateServo.write(closedAngle);
+
+lcd.init();
+lcd.backlight();
+
+Serial.begin(9600);
+
+showStatus("OBJECT SORTER", "Gate CLOSED");
+delay(1500);
+}
+
+void loop() {
+// IR obstacle sensor is active LOW
+if (digitalRead(irPin) != LOW) {
+return;
+}
+
+// Confirm the IR detection is stable
+delay(80);
+if (digitalRead(irPin) != LOW) {
+return;
+}
+
+showStatus("OBJECT DETECTED", "Gate opening");
+digitalWrite(ledPin, HIGH);
+tone(buzzerPin, 2000, 150);
+
+// Open the gate gradually
+moveGateSmoothly(openAngle);
+
+showStatus("GATE OPEN", "Waiting for obj");
+
+unsigned long gateOpenedAt = millis();
+bool objectEntered = false;
+int clearReadings = 0;
+
+while (millis() - gateOpenedAt < maxOpenTime) {
+float distance = readDistance();
+bool irDetected = digitalRead(irPin) == LOW;
+
+if (distance > 0) {
+Serial.print("Distance: ");
+Serial.print(distance);
+Serial.println(" cm");
+
+// Object has entered the ultrasonic sensor's near zone
+if (distance <= objectNearCm) {
+objectEntered = true;
+clearReadings = 0;
+
+showStatus("OBJECT ENTERING", "Gate remains open");
+}
+
+// After entry, count repeated readings showing a clear path
+if (objectEntered && distance >= pathClearCm) {
+clearReadings++;
+} else {
+clearReadings = 0;
+}
+}
+
+// Close only after the ultrasonic readings indicate
+// a clear path several times and the IR sensor is clear.
+if (objectEntered && clearReadings >= 5 && !irDetected) {
+break;
+}
+
+delay(100);
+}
+
+showStatus("GATE CLOSING", "Please wait");
+tone(buzzerPin, 1500, 150);
+
+// Close the gate gradually
+moveGateSmoothly(closedAngle);
+
+digitalWrite(ledPin, LOW);
+noTone(buzzerPin);
+
+showStatus("GATE CLOSED", "Ready for next");
+delay(1000);
+
+// Wait until the IR sensor is clear before accepting another object
+while (digitalRead(irPin) == LOW) {
+delay(20);
+}
+
+showStatus("OBJECT SORTER", "Waiting...");
+}
